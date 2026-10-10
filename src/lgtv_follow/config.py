@@ -1,18 +1,10 @@
 """Configuration loading and validation."""
 
-from __future__ import annotations
-
 import os
 import re
-import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "lgtv-follow"
 CONFIG_PATH = CONFIG_DIR / "config.toml"
@@ -33,25 +25,25 @@ def normalize_input(value: str) -> str:
 @dataclass
 class Rule:
     name: str
-    inputs: List[str]
-    display: Optional[str] = None
-    audio_output: Optional[str] = None
+    inputs: list[str]
+    display: str | None = None
+    audio_output: str | None = None
     audio_on_leave: str = "previous"  # "previous", "builtin", "none", or a device name
-    on_enter: List[str] = field(default_factory=list)
-    on_leave: List[str] = field(default_factory=list)
+    on_enter: list[str] = field(default_factory=list)
+    on_leave: list[str] = field(default_factory=list)
 
-    def matches(self, app_id: Optional[str]) -> bool:
+    def matches(self, app_id: str | None) -> bool:
         return app_id in self.inputs
 
 
 @dataclass
 class Config:
     host: str
-    rules: List[Rule]
+    rules: list[Rule]
     audio_wait: float = 10.0
 
 
-def _str_list(value, where: str) -> List[str]:
+def _str_list(value, where: str) -> list[str]:
     if isinstance(value, str):
         return [value]
     if isinstance(value, list) and all(isinstance(v, str) for v in value):
@@ -90,9 +82,16 @@ def parse(data: dict) -> Config:
             raise ConfigError(f"{name}: does nothing; set display, audio_output, on_enter or on_leave")
         rules.append(rule)
 
-    return Config(
-        host=tv["host"], rules=rules, audio_wait=float(data.get("audio", {}).get("wait_seconds", 10))
-    )
+    return Config(host=tv["host"], rules=rules, audio_wait=_audio_wait(data.get("audio", {})))
+
+
+def _audio_wait(audio) -> float:
+    if not isinstance(audio, dict):
+        raise ConfigError("[audio] must be a table")
+    try:
+        return float(audio.get("wait_seconds", 10))
+    except (TypeError, ValueError):
+        raise ConfigError("[audio] wait_seconds must be a number") from None
 
 
 def load(path: Path = CONFIG_PATH) -> Config:

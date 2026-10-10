@@ -22,13 +22,14 @@ lgtv-follow toggle HDMI_4   # TV → Mac, or back to wherever you were
 ## Quick start
 
 Needs macOS, an LG webOS TV on the same network (tested on a 2024 C4),
-[BetterDisplay](https://betterdisplay.pro) (with its CLI integration enabled) and Homebrew.
+[BetterDisplay](https://betterdisplay.pro) (with its CLI integration enabled), Homebrew and
+[uv](https://docs.astral.sh/uv/) (it fetches Python 3.11+ for you).
 
 ```sh
-brew install betterdisplaycli switchaudio-osx
-uv tool install git+https://github.com/kingsleydon/lgtv-follow   # or: pipx install git+…
+brew install uv betterdisplaycli switchaudio-osx
+uv tool install git+https://github.com/kingsleydon/lgtv-follow
 
-lgtv-follow init --host <TV IP> --display "<TV name in BetterDisplay>"
+lgtv-follow init --host <TV IP> --display "<TV name in BetterDisplay>" --input HDMI_4
 lgtv-follow pair      # accept the prompt on the TV (one time)
 lgtv-follow install   # start now and at every login
 ```
@@ -43,7 +44,7 @@ That's it. Check `~/Library/Logs/lgtv-follow.log` to see it working, and give th
 - **Display name:** `betterdisplaycli get --identifiers`
 - **Which HDMI input the Mac is on:** `lgtv-follow inputs` (`*` marks the current input)
 - **Audio output name:** `SwitchAudioSource -a -t output`
-- **Sanity check:** `lgtv-follow check`, and `lgtv-follow run --dry-run` to watch without changing anything
+- **Sanity check:** `lgtv-follow check` (config, tools, pairing), and `lgtv-follow run --dry-run` to watch without changing anything
 </details>
 
 ## Hotkeys for switching the TV
@@ -112,18 +113,24 @@ Why not HDMI-CEC? Macs can *send* CEC (BetterDisplay does), but there's no suppo
 *listen* to it. TVs also don't reliably announce switching to built-in apps or standby. The
 webOS API reports every change.
 
+## Update
+
+```sh
+uv tool upgrade lgtv-follow && lgtv-follow install
+```
+
 ## Uninstall
 
 ```sh
 lgtv-follow uninstall
 uv tool uninstall lgtv-follow
-rm -rf ~/.config/lgtv-follow ~/.local/state/lgtv-follow
+rm -rf ~/.config/lgtv-follow ~/.local/state/lgtv-follow ~/Library/Logs/lgtv-follow.log
 ```
 
 ## Development
 
 ```sh
-python3 -m venv .venv && .venv/bin/pip install -e '.[test]'
+uv venv --python 3.13 && uv pip install -e '.[test]'
 .venv/bin/pytest && .venv/bin/ruff check . && .venv/bin/ruff format --check .
 ```
 

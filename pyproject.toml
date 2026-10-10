@@ -8,17 +8,19 @@ dynamic = ["version"]
 description = "Make your Mac follow an LG webOS TV's input: connect/disconnect the display and switch audio when the TV changes input."
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 keywords = ["lg", "webos", "tv", "macos", "betterdisplay", "hdmi"]
 classifiers = [
   "Environment :: Console",
   "Operating System :: MacOS",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Home Automation",
 ]
 dependencies = [
   "bscpylgtv>=0.5,<0.6",
-  "tomli>=2; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
@@ -36,8 +38,7 @@ path = "src/lgtv_follow/__init__.py"
 
 [tool.ruff]
 line-length = 110
-target-version = "py39"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
-ignore = ["UP006", "UP007", "UP035", "UP045"]  # keep typing.List/Optional for Python 3.9

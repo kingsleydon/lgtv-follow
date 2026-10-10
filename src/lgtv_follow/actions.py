@@ -1,16 +1,14 @@
 """Side effects run when a rule's input becomes active or inactive."""
 
-from __future__ import annotations
-
 import json
 import logging
 import os
 import shutil
 import subprocess
 import time
-from typing import List, Optional
 
 from .config import STATE_PATH, Rule
+from .state import read_json, write_json
 
 log = logging.getLogger(__name__)
 
@@ -18,7 +16,7 @@ BUILTIN_UID = "BuiltInSpeakerDevice"
 AUDIO_STATE_PATH = STATE_PATH.parent / "audio.json"  # output in use before each rule entered
 
 
-def find_tool(name: str) -> Optional[str]:
+def find_tool(name: str) -> str | None:
     # launchd starts agents with a minimal PATH, so also look in Homebrew's prefixes.
     return shutil.which(name) or next(
         (p for p in (f"/opt/homebrew/bin/{name}", f"/usr/local/bin/{name}") if os.access(p, os.X_OK)),
@@ -61,7 +59,7 @@ class Actions:
             self._run([tool, "set", f"--name={name}", f"--connected={state}"])
         return True
 
-    def _audio(self, *args) -> List[dict]:
+    def _audio(self, *args) -> list[dict]:
         r = subprocess.run(
             [self._tool("SwitchAudioSource"), "-t", "output", "-f", "json", *args],
             capture_output=True,
@@ -69,7 +67,7 @@ class Actions:
         )
         return [json.loads(line) for line in r.stdout.splitlines() if line.strip()]
 
-    def current_audio_output(self) -> Optional[str]:
+    def current_audio_output(self) -> str | None:
         devices = self._audio("-c")
         return devices[0]["name"] if devices else None
 
@@ -98,12 +96,12 @@ class Actions:
         if target:
             self._run([self._tool("SwitchAudioSource"), "-t", "output", "-s", target])
 
-    def _hooks(self, commands, rule: Rule, event: str, app_id: Optional[str]):
+    def _hooks(self, commands, rule: Rule, event: str, app_id: str | None):
         env = dict(os.environ, LGTV_RULE=rule.name, LGTV_EVENT=event, LGTV_INPUT=app_id or "")
         for cmd in commands:
             self._run(cmd, env=env, shell=True)
 
-    def enter(self, rule: Rule, app_id: Optional[str]):
+    def enter(self, rule: Rule, app_id: str | None):
         log.info("enter %s (%s)", rule.name, app_id)
         attached = self.set_display(rule.display, True) if rule.display else True
         # No point waiting for the TV's audio device if its display isn't plugged into this Mac.
@@ -114,7 +112,7 @@ class Actions:
             self.set_audio_output(rule.audio_output)
         self._hooks(rule.on_enter, rule, "enter", app_id)
 
-    def leave(self, rule: Rule, app_id: Optional[str]):
+    def leave(self, rule: Rule, app_id: str | None):
         log.info("leave %s (now %s)", rule.name, app_id)
         self._hooks(rule.on_leave, rule, "leave", app_id)
         if rule.display:
@@ -125,12 +123,12 @@ class Actions:
 
 def leave_audio_target(
     policy: str,
-    current: Optional[str],
-    tv_output: Optional[str],
-    previous: Optional[str],
-    available: List[str],
-    builtin: Optional[str],
-) -> Optional[str]:
+    current: str | None,
+    tv_output: str | None,
+    previous: str | None,
+    available: list[str],
+    builtin: str | None,
+) -> str | None:
     """Which output to switch to when leaving a rule, or None to leave audio alone."""
     if policy == "none" or current != tv_output:
         return None  # disabled, or the user already picked something else
@@ -146,14 +144,8 @@ def leave_audio_target(
 
 
 def _load_audio_state() -> dict:
-    try:
-        return json.loads(AUDIO_STATE_PATH.read_text())
-    except (FileNotFoundError, ValueError):
-        return {}
+    return read_json(AUDIO_STATE_PATH)
 
 
 def _save_audio_state(rule_name: str, output: str):
-    state = _load_audio_state()
-    state[rule_name] = output
-    AUDIO_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    AUDIO_STATE_PATH.write_text(json.dumps(state))
+    write_json(AUDIO_STATE_PATH, {**_load_audio_state(), rule_name: output})

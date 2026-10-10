@@ -1,12 +1,9 @@
 """Tracks the TV's foreground input and fires rule transitions."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
-from typing import Dict, Optional
 
-from bscpylgtv import WebOsClient
+from bscpylgtv import StorageSqliteDict, WebOsClient
 
 from . import history
 from .config import KEY_PATH, Config
@@ -26,9 +23,9 @@ class Follower:
     def __init__(self, config: Config, actions):
         self.rules = config.rules
         self.actions = actions
-        self.active: Dict[str, Optional[bool]] = {r.name: None for r in self.rules}
+        self.active: dict[str, bool | None] = {r.name: None for r in self.rules}
 
-    def update(self, app_id: Optional[str]):
+    def update(self, app_id: str | None):
         changes = [(r, r.matches(app_id)) for r in self.rules]
         changes = [(r, now) for r, now in changes if self.active[r.name] != now]
         # Leave before enter, so e.g. audio ends up on the newly entered rule's output.
@@ -46,6 +43,14 @@ class TVUnreachable(Exception):
 
 class NotPaired(Exception):
     pass
+
+
+async def is_paired(host: str) -> bool:
+    """Whether a pairing key is stored for this TV address (keys are stored per address)."""
+    if not KEY_PATH.exists():
+        return False
+    storage = await StorageSqliteDict.create(str(KEY_PATH))
+    return await storage.get_key(host) is not None
 
 
 async def connect(host: str, pairing: bool = False) -> WebOsClient:

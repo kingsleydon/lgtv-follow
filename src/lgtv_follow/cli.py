@@ -1,7 +1,5 @@
 """Command line entry point."""
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import logging
@@ -15,7 +13,7 @@ from pathlib import Path
 from . import __version__, history
 from .actions import Actions, find_tool
 from .config import CONFIG_PATH, KEY_PATH, ConfigError, load, normalize_input
-from .follower import NotPaired, TVUnreachable, connect, run
+from .follower import NotPaired, TVUnreachable, connect, is_paired, run
 
 LABEL = "io.github.kingsleydon.lgtv-follow"
 PLIST_PATH = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
@@ -29,11 +27,16 @@ host = "{host}"
 
 [[rule]]
 name = "mac"
-input = "HDMI_4"                 # the TV input this Mac is plugged into (or a list / webOS app ids)
-display = "{display}"            # BetterDisplay display: connect on enter, disconnect on leave
-audio_output = "{display}"       # macOS audio output to select on enter
-audio_on_leave = "previous"      # on leave: "previous", "builtin", "none" or a device name
-# on_enter = ["say 'Mac on TV'"] # extra shell commands; env: LGTV_RULE, LGTV_EVENT, LGTV_INPUT
+# The TV input this Mac is plugged into (HDMI_n, a webOS app id, or a list of them).
+input = "{input}"
+# BetterDisplay display to connect on enter and disconnect on leave.
+display = "{display}"
+# macOS audio output to select on enter.
+audio_output = "{display}"
+# On leave: "previous" (the output used before), "builtin", "none", or a device name.
+audio_on_leave = "previous"
+# Extra shell commands; they get LGTV_RULE, LGTV_EVENT and LGTV_INPUT in the environment.
+# on_enter = ["say 'Mac on TV'"]
 # on_leave = []
 """
 
@@ -42,7 +45,7 @@ def cmd_init(args):
     if CONFIG_PATH.exists() and not args.force:
         sys.exit(f"{CONFIG_PATH} already exists (use --force to overwrite)")
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(EXAMPLE_CONFIG.format(host=args.host, display=args.display))
+    CONFIG_PATH.write_text(EXAMPLE_CONFIG.format(host=args.host, display=args.display, input=args.input))
     print(f"Wrote {CONFIG_PATH}\nEdit it, then run `lgtv-follow pair`.")
 
 
@@ -110,7 +113,9 @@ def cmd_check(args):
         ok &= _report_tool("betterdisplaycli", "brew install betterdisplaycli")
     if any(r.audio_output for r in config.rules):
         ok &= _report_tool("SwitchAudioSource", "brew install switchaudio-osx")
-    print(f"paired: {'yes' if KEY_PATH.exists() else 'no - run `lgtv-follow pair`'}")
+    paired = asyncio.run(is_paired(config.host))
+    print(f"paired with {config.host}: {'yes' if paired else 'no - run `lgtv-follow pair`'}")
+    ok &= paired
     sys.exit(0 if ok else 1)
 
 
@@ -167,6 +172,7 @@ def main(argv=None):
     s = sub.add_parser("init", help="write an example config")
     s.add_argument("--host", default="192.168.1.50", help="TV IP address")
     s.add_argument("--display", default="LG TV", help="display name as shown in BetterDisplay")
+    s.add_argument("--input", default="HDMI_4", help="TV input this Mac is plugged into")
     s.add_argument("--force", action="store_true")
     s.set_defaults(func=cmd_init)
 
