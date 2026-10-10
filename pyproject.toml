@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lgtv-follow"
+dynamic = ["version"]
+description = "Make your Mac follow an LG webOS TV's input: connect/disconnect the display and switch audio when the TV changes input."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+keywords = ["lg", "webos", "tv", "macos", "betterdisplay", "hdmi"]
+classifiers = [
+  "Environment :: Console",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Topic :: Home Automation",
+]
+dependencies = [
+  "bscpylgtv>=0.5,<0.6",
+  "tomli>=2; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "ruff>=0.6"]
+
+[project.urls]
+Homepage = "https://github.com/kingsleydon/lgtv-follow"
+Issues = "https://github.com/kingsleydon/lgtv-follow/issues"
+
+[project.scripts]
+lgtv-follow = "lgtv_follow.cli:main"
+
+[tool.hatch.version]
+path = "src/lgtv_follow/__init__.py"
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["UP006", "UP007", "UP035", "UP045"]  # keep typing.List/Optional for Python 3.9

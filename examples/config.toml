@@ -1,0 +1,23 @@
+# Copy to ~/.config/lgtv-follow/config.toml (or run `lgtv-follow init`).
+
+[tv]
+host = "192.168.1.50"          # give the TV a fixed IP / DHCP reservation
+
+[audio]
+wait_seconds = 10              # how long to wait for the HDMI audio device to appear
+
+# The Mac is on HDMI 4: connect the display and use the TV speakers while it's selected.
+[[rule]]
+name = "mac"
+input = "HDMI_4"
+display = "LG TV SSCR2"        # name as shown in BetterDisplay / `betterdisplaycli get --identifiers`
+audio_output = "LG TV SSCR2"   # name as shown by `SwitchAudioSource -a -t output`
+audio_on_leave = "previous"    # "previous" (default), "builtin", "none" or a device name
+
+# Any webOS app id works too (see `lgtv-follow inputs`), and rules can run shell commands.
+# Hooks get LGTV_RULE, LGTV_EVENT (enter/leave) and LGTV_INPUT in the environment.
+[[rule]]
+name = "console"
+input = ["HDMI_1", "HDMI_2"]
+on_enter = ["shortcuts run 'Focus: Gaming'"]
+on_leave = ["shortcuts run 'Focus: Off'"]
