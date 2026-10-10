@@ -15,7 +15,7 @@ from pathlib import Path
 from . import __version__, history
 from .actions import Actions, find_tool
 from .config import CONFIG_PATH, KEY_PATH, ConfigError, load, normalize_input
-from .follower import TVUnreachable, connect, run
+from .follower import NotPaired, TVUnreachable, connect, run
 
 LABEL = "io.github.kingsleydon.lgtv-follow"
 PLIST_PATH = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
@@ -50,7 +50,7 @@ def cmd_pair(args):
     async def go():
         config = load()
         print(f"Connecting to {config.host} - accept the prompt on the TV if it appears...")
-        client = await connect(config.host)
+        client = await connect(config.host, pairing=True)
         print(f"Paired. Current input: {client.current_appId}\nKey stored in {KEY_PATH}")
         await client.disconnect()
 
@@ -199,7 +199,7 @@ def main(argv=None):
         args.func(args)
     except ConfigError as e:
         sys.exit(f"config error: {e}")
-    except TVUnreachable as e:
+    except (TVUnreachable, NotPaired) as e:
         sys.exit(str(e))  # e.g. away from home: one line, exit 1, no traceback
     except KeyboardInterrupt:
         pass

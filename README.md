@@ -85,9 +85,13 @@ More in [examples/config.toml](examples/config.toml).
 ### Away from the TV
 
 When the TV is off, on another network, or you're simply not home, nothing on the Mac is
-touched: the service retries quietly in the background (backing off to once a minute, logging
-only when reachability changes), and `switch`/`toggle` give up after ~3 seconds with a one-line
-message and exit code 1. If the TV isn't plugged into this Mac, display and audio steps are skipped.
+touched: the service retries quietly every few seconds (logging only when reachability
+changes) and picks up as soon as the TV is back. `switch`/`toggle` give up after a few seconds
+with a one-line message and exit code 1. If the TV isn't plugged into this Mac, display and
+audio steps are skipped.
+
+Only `lgtv-follow pair` ever asks the TV for permission. Everything else uses the stored key and
+refuses to connect without one, so no pairing prompt pops up on the TV unexpectedly.
 
 ## Switching inputs from the Mac
 
