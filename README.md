@@ -19,11 +19,28 @@ lgtv-follow toggle HDMI_4   # TV → Mac, or back to wherever you were
 > the TV as a display. Windows open on a screen you can't see and sound goes to an input you're not
 > watching. lgtv-follow fixes both.
 
-## Quick start
+## Install
 
-Needs macOS, an LG webOS TV on the same network (tested on a 2024 C4),
-[BetterDisplay](https://betterdisplay.pro) (with its CLI integration enabled), Homebrew and
-[uv](https://docs.astral.sh/uv/) (it fetches Python 3.11+ for you).
+You need macOS, an LG webOS TV on the same network (tested on a 2024 C4), and
+[BetterDisplay](https://betterdisplay.pro).
+
+### With your AI agent (recommended)
+
+Paste this into Claude Code, Codex, Cursor or any agent that can run commands on your Mac:
+
+```text
+Install lgtv-follow on my Mac by following
+https://raw.githubusercontent.com/kingsleydon/lgtv-follow/main/docs/agent-install.md
+```
+
+The agent installs the tools, finds your TV and its display name, and sets up the background
+service. You only need to accept the pairing prompt on the TV. It can set up hotkeys too.
+([What it follows](docs/agent-install.md).)
+
+### Manual setup
+
+Requires [Homebrew](https://brew.sh). In BetterDisplay's Settings, enable command-line
+integration.
 
 ```sh
 brew install uv betterdisplaycli switchaudio-osx
@@ -35,7 +52,7 @@ lgtv-follow install   # start now and at every login
 ```
 
 That's it. Check `~/Library/Logs/lgtv-follow.log` to see it working, and give the TV a fixed IP
-(a DHCP reservation on your router).
+(a DHCP reservation on your router). uv fetches Python 3.11+ if needed.
 
 <details>
 <summary>Finding the values</summary>
