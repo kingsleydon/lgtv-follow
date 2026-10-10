@@ -43,16 +43,23 @@ Requires [Homebrew](https://brew.sh). In BetterDisplay's Settings, enable comman
 integration.
 
 ```sh
+# 1. Tools: uv (Python installer), BetterDisplay's CLI, audio switcher
 brew install uv betterdisplaycli switchaudio-osx
+
+# 2. lgtv-follow itself (uv fetches Python 3.11+ if needed)
 uv tool install git+https://github.com/kingsleydon/lgtv-follow
 
+# 3. Configure, pair, start
 lgtv-follow init --host <TV IP> --display "<TV name in BetterDisplay>" --input HDMI_4
 lgtv-follow pair      # accept the prompt on the TV (one time)
 lgtv-follow install   # start now and at every login
 ```
 
 That's it. Check `~/Library/Logs/lgtv-follow.log` to see it working, and give the TV a fixed IP
-(a DHCP reservation on your router). uv fetches Python 3.11+ if needed.
+(a DHCP reservation on your router).
+
+Prefer pipx? `brew install pipx python && pipx install git+https://github.com/kingsleydon/lgtv-follow`
+works the same way.
 
 <details>
 <summary>Finding the values</summary>
