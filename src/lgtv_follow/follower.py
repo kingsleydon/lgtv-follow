@@ -12,7 +12,8 @@ from . import history
 from .config import KEY_PATH, Config
 
 log = logging.getLogger(__name__)
-RETRY_SECONDS = 5
+CONNECT_TIMEOUT = 3
+RETRY_MIN, RETRY_MAX = 5, 60
 
 
 class Follower:
@@ -38,10 +39,25 @@ class Follower:
                 log.exception("rule %s failed", rule.name)
 
 
+class TVUnreachable(Exception):
+    pass
+
+
 async def connect(host: str) -> WebOsClient:
+    """Connect once, giving up within a few seconds (TV off, away from home, wrong network...)."""
     KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    client = await WebOsClient.create(host, key_file_path=str(KEY_PATH), states=["power", "current_app"])
-    await client.connect()
+    client = await WebOsClient.create(
+        host,
+        key_file_path=str(KEY_PATH),
+        states=["power", "current_app"],
+        timeout_connect=CONNECT_TIMEOUT,
+        connect_retry_attempts=1,
+    )
+    try:
+        await asyncio.wait_for(client.connect(), CONNECT_TIMEOUT + 2)
+    except Exception as e:
+        await client.disconnect()
+        raise TVUnreachable(f"TV not reachable at {host}") from e
     return client
 
 
@@ -60,18 +76,26 @@ async def run(config: Config, actions):
         history.record(app_id)
         await asyncio.to_thread(follower.update, app_id)
 
+    # While the TV is unreachable nothing on the Mac is touched; retry with backoff and
+    # log only when reachability changes, so being away from home stays quiet.
+    delay, reachable = RETRY_MIN, None
     while True:
         client = None
         try:
             client = await connect(config.host)
             log.info("connected to %s", config.host)
+            reachable, delay = True, RETRY_MIN
             await client.register_state_update_callback(on_state)
             while client.is_connected():
                 await asyncio.sleep(1)
             log.info("connection closed")
-        except Exception as e:
-            log.info("TV unreachable (%s), retrying in %ss", e or type(e).__name__, RETRY_SECONDS)
+        except TVUnreachable as e:
+            if reachable is not False:
+                log.info("%s; retrying quietly in the background", e)
+            reachable, delay = False, min(delay * 2, RETRY_MAX)
+        except Exception:
+            log.exception("unexpected error")
         finally:
             if client:
                 await client.disconnect()
-        await asyncio.sleep(RETRY_SECONDS)
+        await asyncio.sleep(delay)

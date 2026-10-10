@@ -46,14 +46,20 @@ class Actions:
             raise RuntimeError(f"{name} not found on PATH")
         return path
 
-    def set_display(self, name: str, connected: bool):
+    def set_display(self, name: str, connected: bool) -> bool:
+        """Returns False if the display isn't attached to this Mac (e.g. the cable is unplugged)."""
         tool = self._tool("betterdisplaycli")
         state = "on" if connected else "off"
         r = subprocess.run([tool, "get", f"--name={name}", "--connected"], capture_output=True, text=True)
-        if r.stdout.strip() == state:
+        current = r.stdout.strip()
+        if current not in ("on", "off"):
+            log.info("display %r not attached to this Mac, skipping", name)
+            return False
+        if current == state:
             log.info("display %r already %s", name, "connected" if connected else "disconnected")
-            return
-        self._run([tool, "set", f"--name={name}", f"--connected={state}"])
+        else:
+            self._run([tool, "set", f"--name={name}", f"--connected={state}"])
+        return True
 
     def _audio(self, *args) -> List[dict]:
         r = subprocess.run(
@@ -74,7 +80,7 @@ class Actions:
             if any(d["name"] == name for d in self._audio("-a")):
                 break
             if time.monotonic() > deadline:
-                log.warning("audio output %r did not appear within %ss", name, self.audio_wait)
+                log.info("audio output %r not available, skipping", name)
                 return
             time.sleep(0.5)
         self._run([self._tool("SwitchAudioSource"), "-t", "output", "-s", name])
@@ -99,9 +105,9 @@ class Actions:
 
     def enter(self, rule: Rule, app_id: Optional[str]):
         log.info("enter %s (%s)", rule.name, app_id)
-        if rule.display:
-            self.set_display(rule.display, True)
-        if rule.audio_output:
+        attached = self.set_display(rule.display, True) if rule.display else True
+        # No point waiting for the TV's audio device if its display isn't plugged into this Mac.
+        if rule.audio_output and attached:
             current = self.current_audio_output()
             if current and current != rule.audio_output and not self.dry_run:
                 _save_audio_state(rule.name, current)
