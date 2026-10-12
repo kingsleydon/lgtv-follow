@@ -10,6 +10,7 @@ from .config import KEY_PATH, Config
 
 log = logging.getLogger(__name__)
 CONNECT_TIMEOUT = 3
+PING_INTERVAL = 5
 PING_TIMEOUT = 5
 RETRY_SECONDS = 5
 
@@ -63,10 +64,13 @@ async def connect(host: str, pairing: bool = False) -> WebOsClient:
     client = await WebOsClient.create(
         host,
         key_file_path=str(KEY_PATH),
-        states=["power", "current_app"],
+        # Not "power": on power-off bscpylgtv disconnects from inside its own callback task,
+        # which deadlocks the client (it waits forever for that task to finish). `run`
+        # subscribes to power itself, and does its own pings since the library's stop when off.
+        states=["current_app"],
         timeout_connect=CONNECT_TIMEOUT,
         connect_retry_attempts=1,
-        ping_timeout=PING_TIMEOUT,  # notice a dead connection quickly, e.g. after the Mac wakes
+        ping_interval=None,
     )
     if client.client_key is None and not pairing:
         raise NotPaired(f"not paired with {host} - run `lgtv-follow pair`")
@@ -85,12 +89,13 @@ async def run(config: Config, actions):
     # bscpylgtv delivers power and app events on separate tasks; serialize them so actions
     # never interleave, and read the client's latest state inside the lock so the last wins.
     lock = asyncio.Lock()
+    tv_on = True
 
     async def on_state(client):
         nonlocal last
         async with lock:
             # Treat standby/off as "no input" so rules leave cleanly.
-            app_id = client.current_appId if client.is_on else None
+            app_id = client.current_appId if tv_on else None
             if app_id == "" or app_id == last:
                 return
             last = app_id
@@ -107,9 +112,19 @@ async def run(config: Config, actions):
             client = await connect(config.host)
             log.info("connected to %s", config.host)
             reachable = True
+
+            async def on_power(payload, client=client):
+                nonlocal tv_on
+                tv_on = payload.get("state") not in (None, "Power Off", "Suspend", "Active Standby")
+                await on_state(client)
+
+            tv_on = True
+            await client.subscribe_power(on_power)
             await client.register_state_update_callback(on_state)
-            while client.is_connected():
-                await asyncio.sleep(1)
+            # Ping even while the TV is in standby: it can drop off the network without closing
+            # the socket, and the Mac sleeping can leave a dead connection behind too.
+            while client.is_connected() and await alive(client):
+                await asyncio.sleep(PING_INTERVAL)
             log.info("connection closed")
         except (TVUnreachable, NotPaired) as e:
             if reachable is not False:
@@ -119,5 +134,15 @@ async def run(config: Config, actions):
             log.exception("unexpected error")
         finally:
             if client:
-                await client.disconnect()
+                # Never let a wedged client stop the retry loop.
+                await asyncio.wait([asyncio.ensure_future(client.disconnect())], timeout=CONNECT_TIMEOUT + 2)
         await asyncio.sleep(RETRY_SECONDS)
+
+
+async def alive(client: WebOsClient) -> bool:
+    try:
+        pong = await client.connection.ping()
+        await asyncio.wait_for(pong, PING_TIMEOUT)
+        return True
+    except Exception:
+        return False
