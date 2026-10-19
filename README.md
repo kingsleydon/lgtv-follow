@@ -114,6 +114,8 @@ away or goes to standby. At startup the current input is applied, so the Mac sta
 - **Hooks** (`on_enter`, `on_leave`) are shell commands, run with `LGTV_RULE`, `LGTV_EVENT`
   (`enter`/`leave`) and `LGTV_INPUT` set. Rules can use hooks only, e.g. to change Focus
   mode when the console input comes up. See [examples/config.toml](examples/config.toml).
+  Actions run one at a time, in order. A hook still running after 60 seconds is killed along
+  with everything it started; to start something long-running, put it in the background (`&`).
 
 ## Good to know
 

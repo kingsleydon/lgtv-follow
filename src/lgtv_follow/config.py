@@ -51,9 +51,16 @@ def _str_list(value, where: str) -> list[str]:
     raise ConfigError(f"{where} must be a string or a list of strings")
 
 
+def _opt_str(r: dict, key: str, name: str) -> str | None:
+    value = r.get(key)
+    if value is not None and not (isinstance(value, str) and value.strip()):
+        raise ConfigError(f"{name}.{key} must be a non-empty string")
+    return value
+
+
 def parse(data: dict) -> Config:
     tv = data.get("tv")
-    if not isinstance(tv, dict) or not isinstance(tv.get("host"), str):
+    if not isinstance(tv, dict) or not isinstance(tv.get("host"), str) or not tv["host"].strip():
         raise ConfigError("[tv] host is required")
 
     raw_rules = data.get("rule")
@@ -63,7 +70,13 @@ def parse(data: dict) -> Config:
     known = {"name", "input", "display", "audio_output", "audio_on_leave", "on_enter", "on_leave"}
     rules = []
     for i, r in enumerate(raw_rules, 1):
+        if not isinstance(r, dict):
+            raise ConfigError(f"rule {i} must be a table")
         name = r.get("name", f"rule {i}")
+        if not isinstance(name, str) or not name.strip():
+            raise ConfigError(f"rule {i}: name must be a non-empty string")
+        if any(other.name == name for other in rules):
+            raise ConfigError(f"{name}: duplicate rule name")
         unknown = set(r) - known
         if unknown:
             raise ConfigError(f"{name}: unknown keys {sorted(unknown)}")
@@ -72,9 +85,9 @@ def parse(data: dict) -> Config:
         rule = Rule(
             name=name,
             inputs=[normalize_input(v) for v in _str_list(r["input"], f"{name}.input")],
-            display=r.get("display"),
-            audio_output=r.get("audio_output"),
-            audio_on_leave=r.get("audio_on_leave", "previous"),
+            display=_opt_str(r, "display", name),
+            audio_output=_opt_str(r, "audio_output", name),
+            audio_on_leave=_opt_str(r, "audio_on_leave", name) or "previous",
             on_enter=_str_list(r.get("on_enter", []), f"{name}.on_enter"),
             on_leave=_str_list(r.get("on_leave", []), f"{name}.on_leave"),
         )
@@ -82,7 +95,7 @@ def parse(data: dict) -> Config:
             raise ConfigError(f"{name}: does nothing; set display, audio_output, on_enter or on_leave")
         rules.append(rule)
 
-    return Config(host=tv["host"], rules=rules, audio_wait=_audio_wait(data.get("audio", {})))
+    return Config(host=tv["host"].strip(), rules=rules, audio_wait=_audio_wait(data.get("audio", {})))
 
 
 def _audio_wait(audio) -> float:

@@ -10,10 +10,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import __version__, history
+from . import __version__, daemon, history, tv
 from .actions import Actions, find_tool
 from .config import CONFIG_PATH, KEY_PATH, ConfigError, load, normalize_input
-from .follower import NotPaired, TVUnreachable, connect, is_paired, run
 
 LABEL = "io.github.kingsleydon.lgtv-follow"
 PLIST_PATH = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
@@ -41,6 +40,21 @@ audio_on_leave = "previous"
 """
 
 
+def with_tv(use, pairing=False):
+    """Connect, return `await use(client)`, disconnect. A hotkey must never hang on a TV that
+    stopped answering, so it all gives up after a few seconds."""
+
+    async def go():
+        client = await tv.connect(load().host, pairing=pairing)
+        try:
+            async with asyncio.timeout(tv.REQUEST_TIMEOUT):
+                return await tv.call(use(client))
+        finally:
+            await tv.close(client)
+
+    return asyncio.run(go())
+
+
 def cmd_init(args):
     if CONFIG_PATH.exists() and not args.force:
         sys.exit(f"{CONFIG_PATH} already exists (use --force to overwrite)")
@@ -50,59 +64,48 @@ def cmd_init(args):
 
 
 def cmd_pair(args):
-    async def go():
-        config = load()
-        print(f"Connecting to {config.host} - accept the prompt on the TV if it appears...")
-        client = await connect(config.host, pairing=True)
-        print(f"Paired. Current input: {client.current_appId}\nKey stored in {KEY_PATH}")
-        await client.disconnect()
-
-    asyncio.run(go())
+    print(f"Connecting to {load().host} - accept the prompt on the TV if it appears...")
+    current = with_tv(lambda client: client.get_current_app(), pairing=True)
+    print(f"Paired. Current input: {current}\nKey stored in {KEY_PATH}")
 
 
 def cmd_inputs(args):
-    async def go():
-        client = await connect(load().host)
-        for d in await client.get_inputs():
-            mark = "*" if d["appId"] == client.current_appId else " "
-            print(f"{mark} {d['id']:<8} {d['appId']:<24} {d['label']}")
-        print(f"\ncurrent: {client.current_appId}")
-        await client.disconnect()
+    async def get(client):
+        return await client.get_current_app(), await client.get_inputs()
 
-    asyncio.run(go())
+    current, inputs = with_tv(get)
+    for d in inputs:
+        mark = "*" if d["appId"] == current else " "
+        print(f"{mark} {d['id']:<8} {d['appId']:<24} {d['label']}")
+    print(f"\ncurrent: {current}")
 
 
-def _switch(choose):
-    """Connect, pick a target from the current input via `choose`, and switch to it."""
+def switch(choose):
+    """Switch the TV to `choose(current input)`."""
 
-    async def go():
-        client = await connect(load().host)
-        try:
-            current = client.current_appId
-            target = choose(current)
-            if not target:
-                sys.exit("no previous input recorded yet - is `lgtv-follow run` running?")
-            if target == current:
-                print(f"already on {current}")
-                return
-            history.record(current)
-            await client.launch_app(target)
-            history.record(target)
-            print(f"{current} -> {target}")
-        finally:
-            await client.disconnect()
+    async def go(client):
+        current = await client.get_current_app()
+        target = choose(current)
+        if not target:
+            sys.exit("no previous input recorded yet - is `lgtv-follow run` running?")
+        if target == current:
+            return f"already on {current}"
+        history.record(current)
+        await client.launch_app(target)
+        history.record(target)
+        return f"{current} -> {target}"
 
-    asyncio.run(go())
+    print(with_tv(go))
 
 
 def cmd_switch(args):
     target = None if args.input == "back" else normalize_input(args.input)
-    _switch(lambda current: target or history.previous_of(current))
+    switch(lambda current: target or history.previous_of(current))
 
 
 def cmd_toggle(args):
     home = normalize_input(args.input)
-    _switch(lambda current: history.previous_of(current) if current == home else home)
+    switch(lambda current: history.previous_of(current) if current == home else home)
 
 
 def cmd_check(args):
@@ -113,10 +116,9 @@ def cmd_check(args):
         ok &= _report_tool("betterdisplaycli", "brew install betterdisplaycli")
     if any(r.audio_output for r in config.rules):
         ok &= _report_tool("SwitchAudioSource", "brew install switchaudio-osx")
-    paired = asyncio.run(is_paired(config.host))
+    paired = asyncio.run(tv.is_paired(config.host))
     print(f"paired with {config.host}: {'yes' if paired else 'no - run `lgtv-follow pair`'}")
-    ok &= paired
-    sys.exit(0 if ok else 1)
+    sys.exit(0 if ok and paired else 1)
 
 
 def _report_tool(name, hint):
@@ -127,7 +129,9 @@ def _report_tool(name, hint):
 
 def cmd_run(args):
     config = load()
-    asyncio.run(run(config, Actions(audio_wait=config.audio_wait, dry_run=args.dry_run)))
+    # Shows at a glance which copy is running, e.g. a stale non-editable install.
+    logging.info("lgtv-follow %s starting (%s)", __version__, Path(__file__).parent)
+    asyncio.run(daemon.run(config, Actions(audio_wait=config.audio_wait, dry_run=args.dry_run)))
 
 
 def cmd_install(args):
@@ -205,8 +209,10 @@ def main(argv=None):
         args.func(args)
     except ConfigError as e:
         sys.exit(f"config error: {e}")
-    except (TVUnreachable, NotPaired) as e:
+    except (tv.TVUnreachable, tv.NotPaired) as e:
         sys.exit(str(e))  # e.g. away from home: one line, exit 1, no traceback
+    except (TimeoutError, ConnectionError):
+        sys.exit("the TV stopped responding")
     except KeyboardInterrupt:
         pass
 
