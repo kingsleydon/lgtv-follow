@@ -8,7 +8,8 @@ from pathlib import Path
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "lgtv-follow"
 CONFIG_PATH = CONFIG_DIR / "config.toml"
-KEY_PATH = CONFIG_DIR / "tv-key.sqlite"
+KEY_PATH = CONFIG_DIR / "keys.json"
+LEGACY_KEY_PATH = CONFIG_DIR / "tv-key.sqlite"  # where versions before 0.3 kept them
 STATE_PATH = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "lgtv-follow/state.json"
 
 

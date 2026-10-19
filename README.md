@@ -94,7 +94,7 @@ from `which lgtv-follow`:
 
 ```toml
 [tv]
-host = "192.168.1.50"
+host = "192.168.1.50"          # or a URL, e.g. "ws://192.168.1.50:3000" for older TVs
 
 [[rule]]
 name = "mac"
@@ -160,4 +160,5 @@ uv venv --python 3.13 && uv pip install -e '.[test]'
 .venv/bin/pytest && .venv/bin/ruff check . && .venv/bin/ruff format --check .
 ```
 
-Built on [bscpylgtv](https://github.com/chros73/bscpylgtv). MIT licensed.
+Talks to the TV directly over webOS's websocket protocol; the app manifest comes from
+[bscpylgtv](https://github.com/chros73/bscpylgtv). MIT licensed.

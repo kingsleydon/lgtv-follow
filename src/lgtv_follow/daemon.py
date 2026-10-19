@@ -8,9 +8,9 @@ The connection is a state machine with one handler per state, each returning the
     CLOSING      -> WAITING
     WAITING      -> CONNECTING, a few seconds later
 
-What the TV reports goes from the library's callbacks straight into the pure state machine in
-fsm.py. Its decisions run on one worker thread, in order and one at a time, whatever happens to the
-connection meanwhile. Losing the connection by itself changes nothing on the Mac.
+What the TV reports goes from the connection straight to the Follower, which asks the pure state
+machine in fsm.py what to do and runs that on one worker thread: in order and one at a time,
+whatever happens to the connection meanwhile. Losing the connection by itself changes nothing.
 """
 
 import asyncio
@@ -19,17 +19,82 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from enum import Enum, auto
 
-from . import fsm, history, tv
-from .config import Config
+from . import fsm, tv
+from .config import Config, Rule
+from .history import History
+from .keys import KeyStore
 
 log = logging.getLogger(__name__)
-PING_INTERVAL = 5
-RETRY_SECONDS = 5
-# Every wait is bounded, so this long without progress means something unforeseen has wedged us.
-WATCHDOG_SECONDS = 120
-MAX_STUCK_CLOSES = 3
+
+
+@dataclass(frozen=True)
+class Timing:
+    connect: float = tv.CONNECT_TIMEOUT
+    request: float = tv.REQUEST_TIMEOUT
+    ping_interval: float = 5
+    ping_timeout: float = 5
+    retry: float = 5
+    # Every wait is bounded, so this long without progress means something unforeseen wedged us.
+    watchdog: float = 120
+
+
+async def run(config: Config, actions, *, timing=None, keys=None, history=None):
+    follower = Follower(config.rules, actions, history or History())
+    try:
+        await Connection(config.host, keys or KeyStore(), timing or Timing(), follower).run()
+    finally:
+        follower.close()
+
+
+class Follower:
+    """Turns what the TV reports into enters and leaves on the Mac."""
+
+    def __init__(self, rules: list[Rule], actions, history: History):
+        self.rules = rules
+        self.actions = actions
+        self.history = history
+        self.state = fsm.State()
+        # One worker for the life of the process, so actions never overlap or reorder.
+        self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="actions")
+
+    def new_session(self) -> int:
+        """Start following a new connection; reports from earlier ones are ignored from now on."""
+        session = self.state.session + 1
+        self.observe(fsm.NewSession(session))
+        return session
+
+    @property
+    def knows_power(self) -> bool:
+        return self.state.power is not None
+
+    def observe(self, event):
+        """Called for every report, so it returns at once: actions are queued on the worker."""
+        try:
+            self.state, decision = fsm.step(self.state, event, self.rules)
+            if decision:
+                log.info("tv input: %s", decision.input or "off")
+                if decision.changes:
+                    self.worker.submit(self._act, decision)
+                try:
+                    self.history.record(decision.input)  # only for `switch back`; never in the way
+                except OSError as e:
+                    log.warning("can't record input history: %s", e)
+        except Exception:
+            log.exception("handling %r failed", event)
+
+    def _act(self, decision: fsm.Decision):
+        for rule, enter in decision.changes:
+            try:
+                (self.actions.enter if enter else self.actions.leave)(rule, decision.input)
+            except Exception:
+                log.exception("rule %s failed", rule.name)  # the others still run
+
+    def close(self):
+        # A running action can't be interrupted; it finishes on its own.
+        self.worker.shutdown(wait=False, cancel_futures=True)
 
 
 class Conn(Enum):
@@ -40,23 +105,16 @@ class Conn(Enum):
     WAITING = auto()
 
 
-async def run(config: Config, actions):
-    await Daemon(config, actions).run()
-
-
-class Daemon:
-    def __init__(self, config: Config, actions):
-        self.config = config
-        self.actions = actions
-        self.state = fsm.State()
-        self.session = 0
-        self.client = None
-        self.stuck_closes = 0
+class Connection:
+    def __init__(self, host: str, keys: KeyStore, timing: Timing, follower: Follower):
+        self.host = host
+        self.keys = keys
+        self.timing = timing
+        self.follower = follower
+        self.tv = None
         # Retrying every few seconds mustn't log every few seconds: remember what was logged.
         self.unreachable = None  # why the last connection attempt failed
-        self.unusable = None  # why the last session failed before it became usable
-        # One worker for the life of the process, so actions never overlap or reorder.
-        self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="actions")
+        self.unusable = None  # why the last connection failed before it became usable
 
     async def run(self):
         handlers = {
@@ -66,44 +124,45 @@ class Daemon:
             Conn.CLOSING: self.closing,
             Conn.WAITING: self.waiting,
         }
-        self.watchdog = Watchdog(WATCHDOG_SECONDS)
-        conn = Conn.CONNECTING
+        self.watchdog = Watchdog(self.timing.watchdog)
+        state = Conn.CONNECTING
         try:
             while True:
                 self.watchdog.beat()
-                conn = await handlers[conn]()
+                state = await handlers[state]()
         finally:
             # Only on cancellation (tests, Ctrl-C): launchd's SIGTERM ends the process outright.
             self.watchdog.stop()
-            self.worker.shutdown(wait=False, cancel_futures=True)
 
     async def connecting(self) -> Conn:
         try:
-            self.client = await tv.connect(self.config.host)
-        except (tv.TVUnreachable, tv.NotPaired) as e:
+            self.tv = await tv.connect(
+                self.host,
+                self.keys.get(self.host),
+                timeout=self.timing.connect,
+                request_timeout=self.timing.request,
+            )
+        except Exception as e:
             if str(e) != self.unreachable:
                 log.info("%s; retrying quietly in the background", e)
             self.unreachable = str(e)
             return Conn.WAITING
         self.unreachable = None
         if not self.unusable:
-            log.info("connected to %s", self.config.host)
-        self.session += 1
-        self.observe(fsm.NewSession(self.session))
+            log.info("connected to %s", self.host)
         return Conn.SUBSCRIBING
 
     async def subscribing(self) -> Conn:
-        session = self.session
+        session = self.follower.new_session()
         try:
-            await tv.subscribe(
-                self.client,
-                on_power=lambda on: self.observe(fsm.Power(session, on)),
-                on_app=lambda app: self.observe(fsm.App(session, app)),
+            await self.tv.follow(
+                on_power=lambda on: self.follower.observe(fsm.Power(session, on)),
+                on_app=lambda app: self.follower.observe(fsm.App(session, app)),
             )
         except Exception as e:
             problem = f"can't follow the TV's state ({str(e) or type(e).__name__})"
         else:
-            if self.state.power is not None:
+            if self.follower.knows_power:
                 self.unusable = None
                 return Conn.CONNECTED
             # Without it standby can't be told from on, so the Mac could never be synced.
@@ -116,49 +175,20 @@ class Daemon:
     async def connected(self) -> Conn:
         # The TV can drop off the network without closing the socket, and the Mac sleeping can
         # leave a dead connection behind too: only pings tell.
-        while await tv.ping(self.client):
+        while await self.tv.ping(self.timing.ping_timeout):
             self.watchdog.beat()
-            await asyncio.sleep(PING_INTERVAL)
+            await asyncio.sleep(self.timing.ping_interval)
         log.info("connection closed")
         return Conn.CLOSING
 
     async def closing(self) -> Conn:
-        client, self.client = self.client, None
-        if not await tv.close(client):
-            self.stuck_closes += 1
-            log.warning("disconnect is stuck (%d so far)", self.stuck_closes)
-            if self.stuck_closes >= MAX_STUCK_CLOSES:
-                restart("too many stuck disconnects")
+        await self.tv.close()
+        self.tv = None
         return Conn.WAITING
 
     async def waiting(self) -> Conn:
-        await asyncio.sleep(RETRY_SECONDS)
+        await asyncio.sleep(self.timing.retry)
         return Conn.CONNECTING
-
-    def observe(self, event):
-        """Feed a TV report to the state machine and carry out its decision. Called from the
-        library's callbacks, so it returns at once: actions are queued on the worker thread."""
-        try:
-            self.state, decision = fsm.step(self.state, event, self.config.rules)
-            if decision:
-                log.info("tv input: %s", decision.input or "off")
-                if decision.changes:
-                    self.worker.submit(act, self.actions, decision)
-                try:
-                    history.record(decision.input)  # only for `switch back`; never in the way
-                except OSError as e:
-                    log.warning("can't record input history: %s", e)
-        except Exception:
-            log.exception("handling %r failed", event)
-
-
-def act(actions, decision: fsm.Decision):
-    """Run a decision's leaves and enters; one failing rule doesn't stop the others."""
-    for rule, enter in decision.changes:
-        try:
-            (actions.enter if enter else actions.leave)(rule, decision.input)
-        except Exception:
-            log.exception("rule %s failed", rule.name)
 
 
 def restart(reason: str):

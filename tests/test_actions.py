@@ -1,8 +1,10 @@
+import logging
 import time
 
 import pytest
 
-from lgtv_follow.actions import Actions, leave_audio_target, run_command
+from lgtv_follow.actions import Actions, leave_audio_target
+from lgtv_follow.commands import Runner, run_command
 from lgtv_follow.config import Rule
 
 TV, SPK, PODS = "LG TV", "MacBook Pro Speakers", "AirPods"
@@ -27,15 +29,26 @@ def test_leave_audio_target(policy, current, previous, available, expected):
     assert leave_audio_target(policy, current, TV, previous, available, SPK) == expected
 
 
-def test_leave_reads_audio_before_disconnecting_display(monkeypatch):
+def test_leave_reads_audio_before_disconnecting_display(monkeypatch, tmp_path):
     # Once the display is gone macOS switches audio itself, which would hide that we were on the TV.
     events = []
-    a = Actions()
-    monkeypatch.setattr(a, "current_audio_output", lambda: events.append("read") or "LG TV")
-    monkeypatch.setattr(a, "set_display", lambda name, on: events.append("display off"))
-    monkeypatch.setattr(a, "restore_audio_output", lambda rule, current: events.append(("restore", current)))
+    a = Actions(audio_state=tmp_path / "audio.json")
+    monkeypatch.setattr(a.audio, "current", lambda: events.append("read") or "LG TV")
+    monkeypatch.setattr(a.display, "set", lambda name, on: events.append("display off"))
+    monkeypatch.setattr(a.audio, "leave", lambda rule, current: events.append(("restore", current)))
     a.leave(Rule(name="mac", inputs=[], display="LG TV", audio_output="LG TV"), None)
     assert events == ["read", "display off", ("restore", "LG TV")]
+
+
+def test_dry_run_only_logs_changes(caplog, tmp_path):
+    caplog.set_level(logging.INFO)
+    marker = tmp_path / "ran"
+    Runner(dry_run=True).change(f"touch {marker}", shell=True)
+    assert not marker.exists() and "[dry-run]" in caplog.text
+
+
+def test_query_returns_nothing_on_failure():
+    assert Runner().query(["sh", "-c", "echo partial; exit 1"]) == ""
 
 
 def test_stuck_command_times_out():

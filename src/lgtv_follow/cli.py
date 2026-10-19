@@ -3,20 +3,15 @@
 import argparse
 import asyncio
 import logging
-import os
-import plistlib
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
-from . import __version__, daemon, history, tv
-from .actions import Actions, find_tool
+from . import __version__, daemon, launchd, tv
+from .actions import Actions
+from .commands import find_tool
 from .config import CONFIG_PATH, KEY_PATH, ConfigError, load, normalize_input
-
-LABEL = "io.github.kingsleydon.lgtv-follow"
-PLIST_PATH = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
-LOG_PATH = Path.home() / "Library/Logs/lgtv-follow.log"
+from .history import History
+from .keys import KeyStore
 
 EXAMPLE_CONFIG = """\
 # lgtv-follow configuration. Docs: https://github.com/kingsleydon/lgtv-follow
@@ -40,17 +35,17 @@ audio_on_leave = "previous"
 """
 
 
-def with_tv(use, pairing=False):
-    """Connect, return `await use(client)`, disconnect. A hotkey must never hang on a TV that
-    stopped answering, so it all gives up after a few seconds."""
+def with_tv(use):
+    """Connect, return `await use(tv)`, disconnect. Every step gives up after a few seconds: a hotkey
+    must never hang on a TV that stopped answering."""
 
     async def go():
-        client = await tv.connect(load().host, pairing=pairing)
+        host = load().host
+        client = await tv.connect(host, KeyStore().get(host))
         try:
-            async with asyncio.timeout(tv.REQUEST_TIMEOUT):
-                return await tv.call(use(client))
+            return await use(client)
         finally:
-            await tv.close(client)
+            await client.close()
 
     return asyncio.run(go())
 
@@ -64,14 +59,24 @@ def cmd_init(args):
 
 
 def cmd_pair(args):
-    print(f"Connecting to {load().host} - accept the prompt on the TV if it appears...")
-    current = with_tv(lambda client: client.get_current_app(), pairing=True)
+    host = load().host
+    print(f"Connecting to {host} - accept the prompt on the TV if it appears...")
+
+    async def go():
+        client, key = await tv.pair(host)
+        KeyStore().set(host, key)
+        try:
+            return await client.current_app()
+        finally:
+            await client.close()
+
+    current = asyncio.run(go())
     print(f"Paired. Current input: {current}\nKey stored in {KEY_PATH}")
 
 
 def cmd_inputs(args):
     async def get(client):
-        return await client.get_current_app(), await client.get_inputs()
+        return await client.current_app(), await client.inputs()
 
     current, inputs = with_tv(get)
     for d in inputs:
@@ -81,17 +86,18 @@ def cmd_inputs(args):
 
 
 def switch(choose):
-    """Switch the TV to `choose(current input)`."""
+    """Switch the TV to `choose(current input, history)`."""
+    history = History()
 
     async def go(client):
-        current = await client.get_current_app()
-        target = choose(current)
+        current = await client.current_app()
+        target = choose(current, history)
         if not target:
             sys.exit("no previous input recorded yet - is `lgtv-follow run` running?")
         if target == current:
             return f"already on {current}"
         history.record(current)
-        await client.launch_app(target)
+        await client.launch(target)
         history.record(target)
         return f"{current} -> {target}"
 
@@ -100,12 +106,12 @@ def switch(choose):
 
 def cmd_switch(args):
     target = None if args.input == "back" else normalize_input(args.input)
-    switch(lambda current: target or history.previous_of(current))
+    switch(lambda current, history: target or history.previous_of(current))
 
 
 def cmd_toggle(args):
     home = normalize_input(args.input)
-    switch(lambda current: history.previous_of(current) if current == home else home)
+    switch(lambda current, history: history.previous_of(current) if current == home else home)
 
 
 def cmd_check(args):
@@ -116,7 +122,7 @@ def cmd_check(args):
         ok &= _report_tool("betterdisplaycli", "brew install betterdisplaycli")
     if any(r.audio_output for r in config.rules):
         ok &= _report_tool("SwitchAudioSource", "brew install switchaudio-osx")
-    paired = asyncio.run(tv.is_paired(config.host))
+    paired = KeyStore().get(config.host) is not None
     print(f"paired with {config.host}: {'yes' if paired else 'no - run `lgtv-follow pair`'}")
     sys.exit(0 if ok and paired else 1)
 
@@ -136,33 +142,13 @@ def cmd_run(args):
 
 def cmd_install(args):
     load()  # fail early on a broken config
-    exe = shutil.which("lgtv-follow") or os.path.abspath(sys.argv[0])
-    plist = {
-        "Label": LABEL,
-        "ProgramArguments": [exe, "run"],
-        "RunAtLoad": True,
-        "KeepAlive": True,
-        "ProcessType": "Background",
-        "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"},
-        "StandardOutPath": str(LOG_PATH),
-        "StandardErrorPath": str(LOG_PATH),
-    }
-    PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _bootout()
-    with open(PLIST_PATH, "wb") as f:
-        plistlib.dump(plist, f)
-    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(PLIST_PATH)], check=True)
-    print(f"Installed LaunchAgent {LABEL}\nLogs: {LOG_PATH}")
+    launchd.install()
+    print(f"Installed LaunchAgent {launchd.LABEL}\nLogs: {launchd.LOG_PATH}")
 
 
 def cmd_uninstall(args):
-    _bootout()
-    PLIST_PATH.unlink(missing_ok=True)
+    launchd.uninstall()
     print("Uninstalled.")
-
-
-def _bootout():
-    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}"], capture_output=True)
 
 
 def main(argv=None):
@@ -203,8 +189,7 @@ def main(argv=None):
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
-    for noisy in ("bscpylgtv", "websockets"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+    logging.getLogger("websockets").setLevel(logging.WARNING)
     try:
         args.func(args)
     except ConfigError as e:
@@ -213,6 +198,8 @@ def main(argv=None):
         sys.exit(str(e))  # e.g. away from home: one line, exit 1, no traceback
     except (TimeoutError, ConnectionError):
         sys.exit("the TV stopped responding")
+    except tv.TVError as e:
+        sys.exit(f"the TV refused: {e}")
     except KeyboardInterrupt:
         pass
 

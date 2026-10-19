@@ -9,10 +9,11 @@ import time
 import pytest
 import websockets
 
-from lgtv_follow import daemon
-from lgtv_follow import tv as tvlib
+from lgtv_follow import daemon, fsm
 from lgtv_follow.config import parse
-from lgtv_follow.fsm import Decision
+from lgtv_follow.daemon import Timing
+from lgtv_follow.history import History
+from lgtv_follow.keys import KeyStore
 
 HDMI1, HDMI4 = "com.webos.app.hdmi1", "com.webos.app.hdmi4"
 
@@ -96,36 +97,21 @@ class Recorder:
         self._act("leave", app_id)
 
 
+FAST = Timing(connect=1, request=1, ping_interval=0.1, ping_timeout=0.3, retry=0.1)
+
+
 @pytest.fixture
-def harness(monkeypatch, tmp_path):
-    for module, name, value in [
-        (tvlib, "CONNECT_TIMEOUT", 1),
-        (tvlib, "REQUEST_TIMEOUT", 1),
-        (tvlib, "PING_TIMEOUT", 0.3),
-        (daemon, "PING_INTERVAL", 0.1),
-        (daemon, "RETRY_SECONDS", 0.1),
-    ]:
-        monkeypatch.setattr(module, name, value)
-    monkeypatch.setattr(tvlib, "KEY_PATH", tmp_path / "key.sqlite")
-    monkeypatch.setattr(tvlib, "_storage", None)
-    monkeypatch.setattr(daemon.history, "record", lambda *a, **k: None)
-
-    def start(tv, actions, scenario, paired=True):
+def harness(tmp_path):
+    def start(tv, actions, scenario, paired=True, timing=FAST):
         async def main():
-            if paired:
-                await (await tvlib._key_storage()).set_key("127.0.0.1", "k")
             server = await websockets.serve(tv.handler, "127.0.0.1", 0)
-            port = server.sockets[0].getsockname()[1]
-            create = tvlib.WebOsClient.create.__func__
-
-            async def local_create(cls, host, **kw):
-                client = await create(cls, host, without_ssl=True, **kw)
-                client.port = port
-                return client
-
-            monkeypatch.setattr(tvlib.WebOsClient, "create", classmethod(local_create))
-            config = parse({"tv": {"host": "127.0.0.1"}, "rule": [{"input": "HDMI_4", "on_enter": "x"}]})
-            task = asyncio.create_task(daemon.run(config, actions))
+            host = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+            keys = KeyStore(tmp_path / "keys.json", tmp_path / "none.sqlite")
+            if paired:
+                keys.set(host, "k")
+            config = parse({"tv": {"host": host}, "rule": [{"input": "HDMI_4", "on_enter": "x"}]})
+            history = History(tmp_path / "state.json")
+            task = asyncio.create_task(daemon.run(config, actions, timing=timing, keys=keys, history=history))
             try:
                 await asyncio.wait_for(scenario(), 10)
             finally:
@@ -233,9 +219,7 @@ def test_never_connects_without_a_stored_key(harness, caplog):
     harness(tv, rec, scenario, paired=False)
     assert tv.sockets == [] and rec.calls == []  # a keyless connection would prompt on the TV
     logged = [r.message for r in caplog.records if r.name == "lgtv_follow.daemon"]
-    assert logged == [
-        "not paired with 127.0.0.1 - run `lgtv-follow pair`; retrying quietly in the background"
-    ]
+    assert len(logged) == 1 and logged[0].startswith("not paired with ws://127.0.0.1:")
 
 
 def test_tv_rejecting_power_subscription_is_retried_without_acting(harness, caplog):
@@ -249,14 +233,13 @@ def test_tv_rejecting_power_subscription_is_retried_without_acting(harness, capl
     harness(tv, rec, scenario)
     assert rec.calls == []  # without power state it can't tell standby from on
     logged = [r.message for r in caplog.records if r.name == "lgtv_follow.daemon"]
-    assert logged[0] == "connected to 127.0.0.1"
+    assert logged[0].startswith("connected to ws://127.0.0.1:")
     assert len(logged) == 2 and "reconnecting" in logged[1]  # once, not on every retry
 
 
-def test_connection_dropping_mid_subscribe_reconnects_promptly(harness, monkeypatch):
-    # The library cancels the pending subscribe request; that must not strand the daemon until the
-    # subscribe timeout (made long here) or the watchdog.
-    monkeypatch.setattr(tvlib, "REQUEST_TIMEOUT", 60)
+def test_connection_dropping_mid_subscribe_reconnects_promptly(harness):
+    # The pending subscribe request must fail at once, not strand the daemon until the request
+    # timeout (made long here) or the watchdog.
     tv, rec = FakeTV(), Recorder()
     tv.answer_subscriptions = False
 
@@ -266,14 +249,19 @@ def test_connection_dropping_mid_subscribe_reconnects_promptly(harness, monkeypa
         tv.sockets[-1].transport.abort()
         await until(lambda: rec.calls == [("enter", HDMI4)], timeout=3)
 
-    harness(tv, rec, scenario)
+    harness(
+        tv,
+        rec,
+        scenario,
+        timing=Timing(connect=1, request=60, ping_interval=0.1, ping_timeout=0.3, retry=0.1),
+    )
 
 
 def test_history_failure_does_not_block_actions(harness, monkeypatch):
-    def broken(*args, **kwargs):
+    def broken(self, app_id):
         raise PermissionError("read-only")
 
-    monkeypatch.setattr(daemon.history, "record", broken)
+    monkeypatch.setattr(History, "record", broken)
     tv, rec = FakeTV(), Recorder()
 
     async def scenario():
@@ -282,7 +270,7 @@ def test_history_failure_does_not_block_actions(harness, monkeypatch):
     harness(tv, rec, scenario)
 
 
-def test_failing_rule_does_not_stop_the_others():
+def test_failing_rule_does_not_stop_the_others(tmp_path):
     calls = []
 
     class Actions:
@@ -294,5 +282,9 @@ def test_failing_rule_does_not_stop_the_others():
     rules = parse(
         {"tv": {"host": "h"}, "rule": [{"name": n, "input": "HDMI_1", "on_enter": "x"} for n in "ab"]}
     ).rules
-    daemon.act(Actions(), Decision(HDMI1, ((rules[0], True), (rules[1], True))))
+    follower = daemon.Follower(rules, Actions(), History(tmp_path / "state.json"))
+    session = follower.new_session()
+    follower.observe(fsm.Power(session, True))
+    follower.observe(fsm.App(session, HDMI1))
+    follower.worker.shutdown(wait=True)
     assert calls == ["b"]

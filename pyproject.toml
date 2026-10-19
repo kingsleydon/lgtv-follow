@@ -20,7 +20,7 @@ classifiers = [
   "Topic :: Home Automation",
 ]
 dependencies = [
-  "bscpylgtv>=0.5,<0.6",
+  "websockets>=15",
 ]
 
 [project.optional-dependencies]

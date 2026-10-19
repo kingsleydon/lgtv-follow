@@ -13,9 +13,10 @@ def read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def write_json(path: Path, data: dict) -> None:
+def write_json(path: Path, data: dict, mode: int = 0o644) -> None:
     # Write-then-rename so a crash or a concurrent reader never sees a half-written file.
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data))
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode), "w") as f:
+        json.dump(data, f)
     os.replace(tmp, path)
