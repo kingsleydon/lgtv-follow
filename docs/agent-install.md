@@ -87,8 +87,8 @@ lgtv-follow install   # starts now and at every login
 sleep 5; tail -5 ~/Library/Logs/lgtv-follow.log
 ```
 
-The log should show `connected to <TV IP>` and the current `tv input`. If the TV is on the Mac's
-input it also shows `enter mac`; otherwise `leave mac`.
+The log should show `lgtv-follow <version> starting`, `connected to <TV IP>` and the current
+`tv input`. If the TV is on the Mac's input it also shows `enter mac`; otherwise `leave mac`.
 
 Tell the user how to test it: switch the TV to another input with the remote, then back. The
 Mac's display and audio should follow each time, and the log records every change.
@@ -110,8 +110,11 @@ repo's `contrib/script-commands` folder can be added as a script directory.
 
 | Symptom | Fix |
 |---|---|
-| `TV not reachable at …` | TV off, on another network, or wrong IP. Check `host` in the config. |
+| `TV not reachable at …` | TV off, on another network, or wrong IP. Check `host` in the config. Older TVs only answer on port 3000: set `host = "ws://<TV IP>:3000"`. |
 | `not paired with …` | Run `lgtv-follow pair` (after telling the user about the prompt). |
+| `can't follow the TV's state (…)` or `TV didn't report its power state` | The TV refuses the power/input subscriptions. Update the TV's firmware; the service keeps retrying. |
+| `the TV refused: …` | The TV rejected a command; the message says why. |
+| Changes don't take effect, or the log shows an old version | The first log line shows the version and path that's running. Reinstall or upgrade, then `lgtv-follow install` to restart the service. |
 | `betterdisplaycli … Failed.` | Enable command-line integration in BetterDisplay's Settings; check the display name. |
 | Display follows but audio doesn't | Set `audio_output` to a name from `SwitchAudioSource -a -t output`. |
 | `display '…' not attached to this Mac` | The TV isn't plugged into this Mac, or the display name is wrong. |

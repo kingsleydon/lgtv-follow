@@ -2,6 +2,7 @@
 
 [tv]
 host = "192.168.1.50"          # give the TV a fixed IP / DHCP reservation
+                               # (or a URL, e.g. "ws://192.168.1.50:3000" for older TVs)
 
 [audio]
 wait_seconds = 10              # how long to wait for the HDMI audio device to appear
