@@ -127,6 +127,11 @@ away or goes to standby. At startup the current input is applied, so the Mac sta
   uses the stored key, or refuses to connect.
 - **Instant, no polling:** the TV pushes input changes over its local webOS API and the Mac
   reacts right away. A `switch` hotkey takes about a quarter of a second.
+- **Looks after itself:** a dropped connection is noticed within seconds (also when the TV goes
+  to standby or the Mac sleeps) and reconnected. If the service ever stops making progress, it
+  exits and launchd starts it again.
+- **Pairing key:** stored in `~/.config/lgtv-follow/keys.json`, readable only by you. Keys from
+  older versions are carried over automatically.
 
 ### Compared with other tools
 
@@ -145,6 +150,9 @@ webOS API reports every change.
 uv tool upgrade lgtv-follow && lgtv-follow install
 ```
 
+The first line the service logs shows the version it's running and where from. See the
+[changelog](CHANGELOG.md) for what's new.
+
 ## Uninstall
 
 ```sh
@@ -156,9 +164,21 @@ rm -rf ~/.config/lgtv-follow ~/.local/state/lgtv-follow ~/Library/Logs/lgtv-foll
 ## Development
 
 ```sh
-uv venv --python 3.13 && uv pip install -e '.[test]'
-.venv/bin/pytest && .venv/bin/ruff check . && .venv/bin/ruff format --check .
+uv sync                                               # environment from the lockfile
+uv run pytest                                         # includes end-to-end tests against a fake TV
+uv run ruff check . && uv run ruff format --check .
 ```
+
+Dependencies are locked in `uv.lock` (CI runs `uv sync --locked`); change them with `uv add` /
+`uv add --dev`. How the code fits together:
+
+| Module | Role |
+|---|---|
+| `tv.py` | A small client for the TV's webOS protocol (JSON over a websocket). Every wait is bounded. |
+| `fsm.py` | A pure state machine: from what the TV reports, which rules enter or leave. |
+| `daemon.py` | The service: the connection lifecycle as a state loop, the follower that runs actions in order on one worker thread, and a watchdog. |
+| `actions.py`, `commands.py` | What happens on the Mac: display, audio and hooks, through a runner that handles timeouts and dry runs. |
+| `config.py`, `keys.py`, `history.py`, `launchd.py`, `cli.py` | Config file, pairing keys, input history for `back`/`toggle`, the LaunchAgent, and the commands. |
 
 Talks to the TV directly over webOS's websocket protocol; the app manifest comes from
 [bscpylgtv](https://github.com/chros73/bscpylgtv). MIT licensed.
