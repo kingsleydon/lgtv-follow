@@ -6,6 +6,11 @@ All notable changes to this project. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- Pairing works again on TVs whose firmware rejects it with "403 Pairing rejected: blacklisted
+  certificate detected" (webOS 26 and some 2026 updates): lgtv-follow then pairs without the
+  signature those firmwares block. Run `lgtv-follow pair` once after such an update.
+
 ### Changed
 - Dependencies are locked in `uv.lock`, and CI installs from it (`uv sync --locked`).
 - Development tools are in a `dev` dependency group (`uv sync`) instead of a `test` extra.

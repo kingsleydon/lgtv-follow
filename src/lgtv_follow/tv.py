@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 CONNECT_TIMEOUT = 3
 REQUEST_TIMEOUT = 10
 PAIRING_TIMEOUT = 60  # time to accept the prompt on the TV
+BLACKLISTED = "blacklisted certificate"  # the TV's error for a signature it no longer accepts
 CLOSE_TIMEOUT = 2
 
 POWER = "com.webos.service.tvpower/power/getPowerState"
@@ -74,19 +75,15 @@ class TV:
     async def open(cls, host, key, timeout, request_timeout) -> tuple["TV", str]:
         try:
             async with asyncio.timeout(timeout):
-                ws = await websockets.connect(
-                    url(host),
-                    ssl=_INSECURE if url(host).startswith("wss:") else None,  # TVs have self-signed certs
-                    proxy=None,  # the TV is on the local network, whatever the environment says
-                    ping_interval=None,  # we ping ourselves, also in standby
-                    close_timeout=CLOSE_TIMEOUT,
-                    max_size=None,
-                )
                 try:
-                    key = await _register(ws, key)
-                except BaseException:
-                    await ws.close()
-                    raise
+                    ws, key = await _open(host, key, MANIFEST)
+                except TVError as e:
+                    if BLACKLISTED not in str(e):
+                        raise
+                    # Newer firmware (webOS 26 and some 2026 updates) rejects the signature every
+                    # third-party client sends. Unsigned, the TV grants less (no WRITE_SETTINGS),
+                    # but everything used here; a key paired the signed way needs pairing again.
+                    ws, key = await _open(host, key, UNSIGNED_MANIFEST)
         except (OSError, TimeoutError, websockets.WebSocketException) as e:
             raise TVUnreachable(f"TV not reachable at {host}") from e
         return cls(ws, request_timeout), key
@@ -186,8 +183,24 @@ class TV:
                     response.set_exception(ConnectionError("connection closed"))
 
 
-async def _register(ws, key: str | None) -> str:
-    payload = {"forcePairing": False, "pairingType": "PROMPT", "manifest": MANIFEST, "client-key": key}
+async def _open(host: str, key: str | None, manifest: dict):
+    ws = await websockets.connect(
+        url(host),
+        ssl=_INSECURE if url(host).startswith("wss:") else None,  # TVs have self-signed certs
+        proxy=None,  # the TV is on the local network, whatever the environment says
+        ping_interval=None,  # we ping ourselves, also in standby
+        close_timeout=CLOSE_TIMEOUT,
+        max_size=None,
+    )
+    try:
+        return ws, await _register(ws, key, manifest)
+    except BaseException:
+        await ws.close()
+        raise
+
+
+async def _register(ws, key: str | None, manifest: dict) -> str:
+    payload = {"forcePairing": False, "pairingType": "PROMPT", "manifest": manifest, "client-key": key}
     await ws.send(json.dumps({"type": "register", "id": "register_0", "payload": payload}))
     while True:  # possibly a "response" first (e.g. while the TV shows its prompt), then "registered"
         message = json.loads(await ws.recv())
@@ -289,3 +302,4 @@ MANIFEST = {
         "vendorId": "com.lge",
     },
 }
+UNSIGNED_MANIFEST = {k: v for k, v in MANIFEST.items() if k not in ("signatures", "signed")}
