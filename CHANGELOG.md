@@ -6,6 +6,8 @@ All notable changes to this project. The format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-27
+
 ### Fixed
 - Pairing works again on TVs whose firmware rejects it with "403 Pairing rejected: blacklisted
   certificate detected" (webOS 26 and some 2026 updates): lgtv-follow then pairs without the
@@ -51,7 +53,8 @@ All notable changes to this project. The format follows
 
 First release.
 
-[Unreleased]: https://github.com/kingsleydon/lgtv-follow/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kingsleydon/lgtv-follow/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/kingsleydon/lgtv-follow/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/kingsleydon/lgtv-follow/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kingsleydon/lgtv-follow/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kingsleydon/lgtv-follow/releases/tag/v0.1.0
