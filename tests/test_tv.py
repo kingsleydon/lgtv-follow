@@ -43,6 +43,48 @@ def test_pairing_returns_the_new_key():
     assert sent["client-key"] is None and sent["manifest"]["signed"]["appId"] == "com.lge.test"
 
 
+def test_pairing_without_the_signature_when_the_tv_blacklists_it():
+    sent = []
+
+    async def handler(ws):
+        message = json.loads(await ws.recv())
+        sent.append(message["payload"])
+        if "signatures" in message["payload"]["manifest"]:
+            error = "403 Pairing rejected: blacklisted certificate detected"
+            await ws.send(json.dumps({"type": "error", "id": "register_0", "error": error, "payload": {}}))
+            await ws.wait_closed()
+            return
+        await ws.send(
+            json.dumps({"type": "registered", "id": "register_0", "payload": {"client-key": "new"}})
+        )
+        await ws.wait_closed()
+
+    async def use(url):
+        client, key = await tv.pair(url)
+        await client.close()
+        return key
+
+    assert run_with(handler, use) == "new"
+    assert [("signed" in p["manifest"]) for p in sent] == [True, False]
+    assert sent[1]["manifest"]["permissions"] == tv.MANIFEST["permissions"]
+
+
+def test_other_registration_errors_are_not_retried():
+    attempts = []
+
+    async def handler(ws):
+        attempts.append(json.loads(await ws.recv()))
+        await ws.send(json.dumps({"type": "error", "id": "register_0", "error": "403 User denied access"}))
+        await ws.wait_closed()
+
+    async def use(url):
+        with pytest.raises(tv.TVError, match="denied"):
+            await tv.connect(url, "k")
+
+    run_with(handler, use)
+    assert len(attempts) == 1
+
+
 def test_request_and_error_responses():
     async def handler(ws):
         await registers(ws)
